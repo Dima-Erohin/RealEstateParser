@@ -98,14 +98,17 @@ def _process_parse_request(data: Any) -> JSONResponse:
     
     try:
         # Создаем парсер и парсим
-        parser = RealEstateParser()
-        results = parser.parse_all_sites(data_list)
-        
-        # Возвращаем результаты в виде чистого JSON
-        return JSONResponse(
-            content=results,
-            media_type='application/json'
-        )
+        parser = RealEstateParser(headless=True)
+        try:
+            results = parser.parse_all_sites(data_list)
+            # Возвращаем результаты в виде чистого JSON
+            return JSONResponse(
+                content=results,
+                media_type='application/json'
+            )
+        finally:
+            # Очищаем ресурсы браузера
+            parser.cleanup()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

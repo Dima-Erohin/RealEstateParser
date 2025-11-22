@@ -2,6 +2,8 @@
 
 Python-скрипт для парсинга данных о недвижимости с различных сайтов. Получает GET/POST запросы с JSON, содержащим список сайтов и CSS-селекторы, парсит данные и возвращает результаты в формате JSON.
 
+Использует **Playwright** для работы с JavaScript-сайтами и динамическим контентом.
+
 ## Возможности
 
 - Парсинг данных о недвижимости с нескольких сайтов одновременно
@@ -11,6 +13,8 @@ Python-скрипт для парсинга данных о недвижимос
 - Автоматическая нормализация URL
 - Обработка ошибок и валидация данных
 - Извлечение фото из различных атрибутов (src, data-src, data-lazy-src, background-image)
+- **Работа с JavaScript-сайтами** через Playwright
+- **Headless режим** для деплоя на хостинг без GUI
 
 ## Установка
 
@@ -19,6 +23,22 @@ Python-скрипт для парсинга данных о недвижимос
 2. Установите зависимости:
 ```bash
 pip install -r requirements.txt
+```
+
+3. **Установите браузеры для Playwright** (обязательно):
+```bash
+playwright install chromium
+```
+
+Или установите все браузеры:
+```bash
+playwright install
+```
+
+Для деплоя на Linux-хостинг используйте:
+```bash
+playwright install-deps chromium
+playwright install chromium
 ```
 
 ## Использование
@@ -45,16 +65,18 @@ uvicorn api_server:app --host 0.0.0.0 --port 5000
 
 #### Примеры запросов
 
-**POST запрос:**
+**POST запрос (один объект):**
+```bash
+curl -X POST http://localhost:5000/parse \
+  -H "Content-Type: application/json" \
+  -d '{"site_url":"https://realt.by/sale/flats/","selectors":{"object_url":"a[aria-label*=\"Ссылка на объект\"]@href","title":"img[title]@title","description":".md:block.text-basic.text-subhead.hidden span.line-clamp-2","address":"p.text-basic.w-full.text-subhead.md:text-body","price":".text-title.font-semibold.text-basic-900","rooms":"p.flex.flex-wrap.text-headline span:nth-child(1)","floor":"p.flex.flex-wrap.text-headline span:nth-child(3)","area":"p.flex.flex-wrap.text-headline span:nth-child(2)","photos":".swiper-slide img@src"}}'
+```
+
+**POST запрос (массив объектов):**
 ```bash
 curl -X POST http://localhost:5000/parse \
   -H "Content-Type: application/json" \
   -d @example_input.json
-```
-
-**GET запрос:**
-```bash
-curl "http://localhost:5000/parse?data=%5B%7B%22site_url%22%3A%22https%3A%2F%2Fexample.com%22%2C%22selectors%22%3A%7B%22object_url%22%3A%22a.listing%22%7D%7D%5D"
 ```
 
 Или используя Python:
@@ -62,8 +84,20 @@ curl "http://localhost:5000/parse?data=%5B%7B%22site_url%22%3A%22https%3A%2F%2Fe
 import requests
 import json
 
-with open('example_input.json', 'r', encoding='utf-8') as f:
-    data = json.load(f)
+data = {
+    "site_url": "https://realt.by/sale/flats/",
+    "selectors": {
+        "object_url": "a[aria-label*='Ссылка на объект']@href",
+        "title": "img[title]@title",
+        "description": ".md:block.text-basic.text-subhead.hidden span.line-clamp-2",
+        "address": "p.text-basic.w-full.text-subhead.md:text-body",
+        "price": ".text-title.font-semibold.text-basic-900",
+        "rooms": "p.flex.flex-wrap.text-headline span:nth-child(1)",
+        "floor": "p.flex.flex-wrap.text-headline span:nth-child(3)",
+        "area": "p.flex.flex-wrap.text-headline span:nth-child(2)",
+        "photos": ".swiper-slide img@src"
+    }
+}
 
 response = requests.post('http://localhost:5000/parse', json=data)
 results = response.json()
@@ -82,23 +116,36 @@ cat example_input.json | python parser.py
 
 ## Формат входных данных
 
-JSON должен содержать массив объектов, каждый из которых описывает сайт для парсинга:
+JSON может быть одним объектом или массивом объектов:
 
+**Один объект:**
+```json
+{
+  "site_url": "https://example-real-estate.com",
+  "selectors": {
+    "object_url": "a.listing-link@href",
+    "title": ".listing-title",
+    "description": ".listing-description",
+    "address": ".listing-address",
+    "price": ".listing-price",
+    "rooms": ".listing-rooms",
+    "floor": ".listing-floor",
+    "area": ".listing-area",
+    "photos": ".listing-photo img@src"
+  }
+}
+```
+
+**Массив объектов:**
 ```json
 [
   {
     "site_url": "https://example-real-estate.com",
-    "selectors": {
-      "object_url": "a.listing-link",
-      "title": ".listing-title",
-      "description": ".listing-description",
-      "address": ".listing-address",
-      "price": ".listing-price",
-      "rooms": ".listing-rooms",
-      "floor": ".listing-floor",
-      "area": ".listing-area",
-      "photos": ".listing-photo img"
-    }
+    "selectors": {...}
+  },
+  {
+    "site_url": "https://another-site.com",
+    "selectors": {...}
   }
 ]
 ```
@@ -115,6 +162,12 @@ JSON должен содержать массив объектов, каждый
 - `area` - селектор для площади
 - `photos` - селектор для фотографий (извлекаются URL из атрибутов src, data-src, data-lazy-src или background-image)
 
+### Синтаксис селекторов с атрибутами
+
+Поддерживаются два формата:
+- `selector@attr` (например: `a@href`, `img@src`)
+- `selector::attr(attr)` (например: `a::attr(href)`, `img::attr(src)`)
+
 ## Формат выходных данных
 
 Результат возвращается в виде массива JSON объектов:
@@ -122,8 +175,8 @@ JSON должен содержать массив объектов, каждый
 ```json
 [
   {
-    "site_url": "https://example-real-estate.com",
-    "object_url": "https://example-real-estate.com/listing/123",
+    "site_url": "https://realt.by/sale/flats/",
+    "object_url": "https://realt.by/sale/flats/12345",
     "title": "Квартира 2 комнаты",
     "description": "Уютная квартира в центре города",
     "address": "ул. Примерная, д. 1",
@@ -132,8 +185,8 @@ JSON должен содержать массив объектов, каждый
     "floor": "5",
     "area": "45 м²",
     "photos": [
-      "https://example-real-estate.com/photos/1.jpg",
-      "https://example-real-estate.com/photos/2.jpg"
+      "https://realt.by/photos/1.jpg",
+      "https://realt.by/photos/2.jpg"
     ]
   }
 ]
@@ -143,7 +196,7 @@ JSON должен содержать массив объектов, каждый
 
 ```
 RealEstateParser/
-├── parser.py           # Основной класс парсера
+├── parser.py           # Основной класс парсера (Playwright)
 ├── api_server.py       # FastAPI веб-сервер
 ├── requirements.txt    # Зависимости проекта
 ├── example_input.json  # Пример входных данных
@@ -153,6 +206,8 @@ RealEstateParser/
 
 ## Особенности
 
+- **Playwright**: Работает с JavaScript-сайтами и динамическим контентом
+- **Headless режим**: По умолчанию запускается без GUI (подходит для серверов)
 - **Относительные URL**: Автоматически преобразуются в абсолютные относительно базового URL сайта
 - **Множественные источники фото**: Поддержка различных атрибутов для lazy-loading изображений
 - **Обработка ошибок**: Продолжает работу даже при ошибках на отдельных сайтах
@@ -165,9 +220,46 @@ RealEstateParser/
 
 ```python
 parser = RealEstateParser(
-    timeout=30,    # Таймаут для HTTP запросов (секунды)
-    delay=1.0      # Задержка между запросами (секунды)
+    timeout=30000,    # Таймаут для загрузки страниц (в миллисекундах)
+    delay=1.0,        # Задержка между запросами (в секундах)
+    headless=True     # Запуск браузера в headless режиме (без GUI)
 )
+```
+
+## Деплой на хостинг
+
+### Требования для Linux-хостинга:
+
+1. Установите системные зависимости:
+```bash
+playwright install-deps chromium
+```
+
+2. Установите браузер Chromium:
+```bash
+playwright install chromium
+```
+
+3. Убедитесь, что используется headless режим (по умолчанию `headless=True`)
+
+4. Для некоторых хостингов может потребоваться установка дополнительных библиотек:
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2
 ```
 
 ## Health Check
@@ -185,9 +277,7 @@ curl http://localhost:5000/health
 ## Требования
 
 - Python 3.7+
-- requests
-- beautifulsoup4
-- lxml
+- playwright
 - fastapi
 - uvicorn
 - pydantic
@@ -203,4 +293,4 @@ curl http://localhost:5000/health
 2. Доступность сайтов для парсинга
 3. Формат входного JSON
 4. Логи сервера (выводятся в stderr)
-
+5. Установлены ли браузеры Playwright: `playwright install chromium`

@@ -3,56 +3,95 @@
 """
 Real Estate Parser Script
 Получает JSON с сайтами и селекторами, парсит данные и возвращает результаты
+Использует Playwright для работы с JavaScript-сайтами
 """
 
 import json
 import sys
 import re
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, Page, ElementHandle, Browser, BrowserContext
 from typing import List, Dict, Any, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 import time
 
 
 class RealEstateParser:
     """Класс для парсинга недвижимости с различных сайтов"""
     
-    def __init__(self, timeout: int = 30, delay: float = 1.0):
+    def __init__(self, timeout: int = 30000, delay: float = 1.0, headless: bool = True):
         """
         Инициализация парсера
         
         Args:
-            timeout: Таймаут для HTTP запросов
+            timeout: Таймаут для загрузки страниц (в миллисекундах)
             delay: Задержка между запросами (в секундах)
+            headless: Запуск браузера в headless режиме (без GUI)
         """
         self.timeout = timeout
         self.delay = delay
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+        self.headless = headless
+        self.playwright = None
+        self.browser: Optional[Browser] = None
+        self.context: Optional[BrowserContext] = None
     
-    def fetch_page(self, url: str) -> Optional[BeautifulSoup]:
+    def __enter__(self):
+        """Контекстный менеджер для автоматического закрытия браузера"""
+        self.playwright = sync_playwright().start()
+        self.browser = self.playwright.chromium.launch(
+            headless=self.headless,
+            args=['--no-sandbox', '--disable-setuid-sandbox']  # Для деплоя на хостинг
+        )
+        self.context = self.browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            viewport={'width': 1920, 'height': 1080}
+        )
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Закрытие браузера при выходе из контекста"""
+        if self.context:
+            self.context.close()
+        if self.browser:
+            self.browser.close()
+        if self.playwright:
+            self.playwright.stop()
+    
+    def fetch_page(self, url: str) -> Optional[Page]:
         """
-        Загружает страницу и возвращает BeautifulSoup объект
+        Загружает страницу и возвращает Page объект
         
         Args:
             url: URL страницы для загрузки
             
         Returns:
-            BeautifulSoup объект или None при ошибке
+            Page объект или None при ошибке
         """
+        # Инициализируем браузер, если еще не инициализирован
+        if not self.context:
+            if not self.playwright:
+                self.playwright = sync_playwright().start()
+            if not self.browser:
+                self.browser = self.playwright.chromium.launch(
+                    headless=self.headless,
+                    args=['--no-sandbox', '--disable-setuid-sandbox']
+                )
+            if not self.context:
+                self.context = self.browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    viewport={'width': 1920, 'height': 1080}
+                )
+        
         try:
-            response = self.session.get(url, timeout=self.timeout)
-            response.raise_for_status()
-            response.encoding = response.apparent_encoding or 'utf-8'
-            return BeautifulSoup(response.text, 'html.parser')
+            page = self.context.new_page()
+            page.goto(url, wait_until='networkidle', timeout=self.timeout)
+            # Небольшая задержка для загрузки динамического контента
+            page.wait_for_timeout(1000)
+            return page
         except Exception as e:
             print(f"Ошибка при загрузке {url}: {e}", file=sys.stderr)
             return None
     
-    def extract_text(self, element: Any, selector: str) -> str:
+    def extract_text(self, element: Any, selector: str, page: Optional[Page] = None) -> str:
         """
         Извлекает текст или атрибут по CSS-селектору
         
@@ -60,33 +99,45 @@ class RealEstateParser:
         Если указан атрибут, извлекается значение атрибута, иначе текст
         
         Args:
-            element: BeautifulSoup элемент для поиска
+            element: ElementHandle или Page для поиска
             selector: CSS-селектор (может содержать @attr или ::attr(attr))
+            page: Page объект (если element - это Page)
             
         Returns:
             Извлеченный текст/атрибут или пустая строка
         """
-        if not selector or not element:
+        if not selector:
             return ""
         
         try:
             clean_selector, attr = self.parse_selector_with_attr(selector)
             
-            found = element.select_one(clean_selector) if clean_selector else element
+            # Определяем, где искать
+            search_element = page if page else element
+            
+            if not search_element:
+                return ""
+            
+            if clean_selector:
+                found = search_element.query_selector(clean_selector)
+            else:
+                found = element if isinstance(element, ElementHandle) else None
             
             if found:
                 if attr:
                     # Извлекаем атрибут
-                    return found.get(attr, "")
+                    result = found.get_attribute(attr) or ""
+                    return result.strip()
                 else:
                     # Извлекаем текст
-                    return found.get_text(strip=True)
+                    result = found.text_content() or ""
+                    return result.strip()
         except Exception as e:
             print(f"Ошибка при извлечении по селектору '{selector}': {e}", file=sys.stderr)
         
         return ""
     
-    def extract_attr(self, element: Any, selector: str, attr: str = 'href') -> str:
+    def extract_attr(self, element: Any, selector: str, attr: str = 'href', page: Optional[Page] = None) -> str:
         """
         Извлекает атрибут по CSS-селектору
         
@@ -94,14 +145,15 @@ class RealEstateParser:
         Если атрибут указан в селекторе, используется он, иначе используется параметр attr
         
         Args:
-            element: BeautifulSoup элемент для поиска
+            element: ElementHandle или Page для поиска
             selector: CSS-селектор (может содержать @attr или ::attr(attr))
             attr: Название атрибута по умолчанию (если не указан в селекторе)
+            page: Page объект (если element - это Page)
             
         Returns:
             Значение атрибута или пустая строка
         """
-        if not selector or not element:
+        if not selector:
             return ""
         
         try:
@@ -109,15 +161,26 @@ class RealEstateParser:
             # Используем атрибут из селектора, если указан, иначе используем параметр
             target_attr = selector_attr if selector_attr else attr
             
-            found = element.select_one(clean_selector) if clean_selector else element
+            # Определяем, где искать
+            search_element = page if page else element
+            
+            if not search_element:
+                return ""
+            
+            if clean_selector:
+                found = search_element.query_selector(clean_selector)
+            else:
+                found = element if isinstance(element, ElementHandle) else None
+            
             if found:
-                return found.get(target_attr, "")
+                result = found.get_attribute(target_attr) or ""
+                return result.strip()
         except Exception as e:
             print(f"Ошибка при извлечении атрибута по селектору '{selector}': {e}", file=sys.stderr)
         
         return ""
     
-    def extract_list(self, element: Any, selector: str, attr: Optional[str] = None) -> List[str]:
+    def extract_list(self, element: Any, selector: str, attr: Optional[str] = None, page: Optional[Page] = None) -> List[str]:
         """
         Извлекает список значений по CSS-селектору
         
@@ -125,14 +188,15 @@ class RealEstateParser:
         Если атрибут указан в селекторе, используется он, иначе используется параметр attr
         
         Args:
-            element: BeautifulSoup элемент для поиска
+            element: ElementHandle или Page для поиска
             selector: CSS-селектор (может содержать @attr или ::attr(attr))
             attr: Атрибут для извлечения (если None и не указан в селекторе, извлекается текст)
+            page: Page объект (если element - это Page)
             
         Returns:
             Список значений
         """
-        if not selector or not element:
+        if not selector:
             return []
         
         try:
@@ -140,12 +204,32 @@ class RealEstateParser:
             # Используем атрибут из селектора, если указан, иначе используем параметр
             target_attr = selector_attr if selector_attr else attr
             
-            found_elements = element.select(clean_selector) if clean_selector else [element]
+            # Определяем, где искать
+            search_element = page if page else element
             
-            if target_attr:
-                return [elem.get(target_attr, "") for elem in found_elements if elem.get(target_attr)]
+            if not search_element:
+                return []
+            
+            if clean_selector:
+                found_elements = search_element.query_selector_all(clean_selector)
             else:
-                return [elem.get_text(strip=True) for elem in found_elements if elem.get_text(strip=True)]
+                found_elements = [element] if isinstance(element, ElementHandle) else []
+            
+            results = []
+            for elem in found_elements:
+                try:
+                    if target_attr:
+                        value = elem.get_attribute(target_attr)
+                        if value:
+                            results.append(value.strip())
+                    else:
+                        value = elem.text_content()
+                        if value:
+                            results.append(value.strip())
+                except Exception:
+                    continue
+            
+            return results
         except Exception as e:
             print(f"Ошибка при извлечении списка по селектору '{selector}': {e}", file=sys.stderr)
         
@@ -204,14 +288,15 @@ class RealEstateParser:
         
         return urljoin(base_url, url)
     
-    def parse_object(self, object_element: Any, selectors: Dict[str, str], base_url: str) -> Dict[str, Any]:
+    def parse_object(self, object_element: ElementHandle, selectors: Dict[str, str], base_url: str, page: Page) -> Dict[str, Any]:
         """
         Парсит один объект недвижимости
         
         Args:
-            object_element: BeautifulSoup элемент объекта
+            object_element: ElementHandle объект недвижимости
             selectors: Словарь с CSS-селекторами
             base_url: Базовый URL сайта
+            page: Page объект для поиска внутри элемента
             
         Returns:
             Словарь с данными объекта
@@ -237,28 +322,30 @@ class RealEstateParser:
             # Определяем атрибут для извлечения
             target_attr = selector_attr if selector_attr else "href"
             
-            # object_element уже найден по clean_selector (или его части)
             # Пробуем извлечь атрибут из самого элемента
-            object_url = object_element.get(target_attr, "")
+            object_url = object_element.get_attribute(target_attr) or ""
             
             # Если не найден в самом элементе и есть clean_selector, ищем внутри
             if not object_url and clean_selector:
-                found = object_element.select_one(clean_selector)
+                found = object_element.query_selector(clean_selector)
                 if found:
-                    object_url = found.get(target_attr, "")
+                    object_url = found.get_attribute(target_attr) or ""
             
             result["object_url"] = self.normalize_url(object_url, base_url)
             
-            # Если URL объекта - это сам элемент, используем его href
-            if not result["object_url"] and object_element.name == 'a':
-                result["object_url"] = self.normalize_url(object_element.get("href", ""), base_url)
+            # Если URL объекта - это сам элемент (ссылка), используем его href
+            if not result["object_url"]:
+                tag_name = object_element.evaluate("el => el.tagName.toLowerCase()")
+                if tag_name == 'a':
+                    object_url = object_element.get_attribute("href") or ""
+                    result["object_url"] = self.normalize_url(object_url, base_url)
         
         # Извлекаем остальные поля
         # Селекторы могут быть относительными (относительно object_element) или абсолютными
         # Поддерживается синтаксис @attr и ::attr(attr)
         for field in ["title", "description", "address", "price", "rooms", "floor", "area"]:
             if field in selectors:
-                result[field] = self.extract_text(object_element, selectors[field])
+                result[field] = self.extract_text(object_element, selectors[field], page)
         
         # Извлекаем фото
         if "photos" in selectors:
@@ -268,23 +355,26 @@ class RealEstateParser:
             
             if photo_attr:
                 # Атрибут указан в селекторе, используем его
-                photo_urls = self.extract_list(object_element, selectors["photos"])
+                photo_urls = self.extract_list(object_element, selectors["photos"], page=page)
             else:
                 # Пробуем разные атрибуты по порядку
-                photo_urls = self.extract_list(object_element, clean_photo_selector, "src")
+                photo_urls = self.extract_list(object_element, clean_photo_selector, "src", page)
                 if not photo_urls:
-                    photo_urls = self.extract_list(object_element, clean_photo_selector, "data-src")
+                    photo_urls = self.extract_list(object_element, clean_photo_selector, "data-src", page)
                 if not photo_urls:
-                    photo_urls = self.extract_list(object_element, clean_photo_selector, "data-lazy-src")
+                    photo_urls = self.extract_list(object_element, clean_photo_selector, "data-lazy-src", page)
                 if not photo_urls:
                     # Пробуем background-image в style
-                    img_elements = object_element.select(clean_photo_selector) if clean_photo_selector else []
+                    img_elements = object_element.query_selector_all(clean_photo_selector) if clean_photo_selector else []
                     for img in img_elements:
-                        style = img.get("style", "")
-                        if "url(" in style:
-                            match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
-                            if match:
-                                photo_urls.append(match.group(1))
+                        try:
+                            style = img.get_attribute("style") or ""
+                            if "url(" in style:
+                                match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
+                                if match:
+                                    photo_urls.append(match.group(1))
+                        except Exception:
+                            continue
             
             # Нормализуем URL фото
             result["photos"] = [self.normalize_url(url, base_url) for url in photo_urls if url]
@@ -303,39 +393,54 @@ class RealEstateParser:
             Список объектов недвижимости
         """
         results = []
+        page = None
         
-        # Загружаем главную страницу
-        soup = self.fetch_page(site_url)
-        if not soup:
-            return results
+        try:
+            # Загружаем главную страницу
+            page = self.fetch_page(site_url)
+            if not page:
+                return results
+            
+            # Проверяем наличие селектора для объектов
+            if "object_url" not in selectors:
+                print(f"Предупреждение: для сайта {site_url} не указан селектор 'object_url'", file=sys.stderr)
+                return results
+            
+            # Находим все объекты на странице
+            # Извлекаем чистый селектор (без @attr или ::attr(attr)) для поиска элементов
+            object_selector_full = selectors["object_url"]
+            object_selector, _ = self.parse_selector_with_attr(object_selector_full)
+            
+            if not object_selector:
+                print(f"Не удалось извлечь селектор из '{object_selector_full}'", file=sys.stderr)
+                return results
+            
+            object_elements = page.query_selector_all(object_selector)
+            
+            if not object_elements:
+                print(f"Не найдено объектов на странице {site_url} по селектору '{object_selector}'", file=sys.stderr)
+                return results
+            
+            print(f"Найдено {len(object_elements)} объектов на {site_url}", file=sys.stderr)
+            
+            # Парсим каждый объект
+            for obj_elem in object_elements:
+                try:
+                    obj_data = self.parse_object(obj_elem, selectors, site_url, page)
+                    # Добавляем только если есть хотя бы URL объекта
+                    if obj_data["object_url"]:
+                        results.append(obj_data)
+                except Exception as e:
+                    print(f"Ошибка при парсинге объекта на {site_url}: {e}", file=sys.stderr)
+                    continue
         
-        # Проверяем наличие селектора для объектов
-        if "object_url" not in selectors:
-            print(f"Предупреждение: для сайта {site_url} не указан селектор 'object_url'", file=sys.stderr)
-            return results
-        
-        # Находим все объекты на странице
-        # Извлекаем чистый селектор (без @attr или ::attr(attr)) для поиска элементов
-        object_selector_full = selectors["object_url"]
-        object_selector, _ = self.parse_selector_with_attr(object_selector_full)
-        object_elements = soup.select(object_selector) if object_selector else []
-        
-        if not object_elements:
-            print(f"Не найдено объектов на странице {site_url} по селектору '{object_selector}'", file=sys.stderr)
-            return results
-        
-        print(f"Найдено {len(object_elements)} объектов на {site_url}", file=sys.stderr)
-        
-        # Парсим каждый объект
-        for obj_elem in object_elements:
-            try:
-                obj_data = self.parse_object(obj_elem, selectors, site_url)
-                # Добавляем только если есть хотя бы URL объекта
-                if obj_data["object_url"]:
-                    results.append(obj_data)
-            except Exception as e:
-                print(f"Ошибка при парсинге объекта на {site_url}: {e}", file=sys.stderr)
-                continue
+        finally:
+            # Закрываем страницу
+            if page:
+                try:
+                    page.close()
+                except Exception:
+                    pass
         
         # Задержка между запросами
         if self.delay > 0:
@@ -355,6 +460,21 @@ class RealEstateParser:
         """
         all_results = []
         
+        # Инициализируем браузер, если еще не инициализирован
+        if not self.context:
+            if not self.playwright:
+                self.playwright = sync_playwright().start()
+            if not self.browser:
+                self.browser = self.playwright.chromium.launch(
+                    headless=self.headless,
+                    args=['--no-sandbox', '--disable-setuid-sandbox']
+                )
+            if not self.context:
+                self.context = self.browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    viewport={'width': 1920, 'height': 1080}
+                )
+        
         for site in sites:
             site_url = site.get("site_url", "")
             selectors = site.get("selectors", {})
@@ -372,6 +492,27 @@ class RealEstateParser:
             all_results.extend(site_results)
         
         return all_results
+    
+    def cleanup(self):
+        """Явное закрытие браузера (если не используется контекстный менеджер)"""
+        if self.context:
+            try:
+                self.context.close()
+            except Exception:
+                pass
+            self.context = None
+        if self.browser:
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+            self.browser = None
+        if self.playwright:
+            try:
+                self.playwright.stop()
+            except Exception:
+                pass
+            self.playwright = None
 
 
 def main():
@@ -395,11 +536,14 @@ def main():
         sys.exit(1)
     
     # Создаем парсер и парсим
-    parser = RealEstateParser()
-    results = parser.parse_all_sites(data)
-    
-    # Выводим результат в формате JSON
-    print(json.dumps(results, ensure_ascii=False, indent=2))
+    parser = RealEstateParser(headless=True)
+    try:
+        results = parser.parse_all_sites(data)
+        # Выводим результат в формате JSON
+        print(json.dumps(results, ensure_ascii=False, indent=2))
+    finally:
+        # Очищаем ресурсы
+        parser.cleanup()
 
 
 if __name__ == "__main__":
