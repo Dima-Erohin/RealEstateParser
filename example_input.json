@@ -2,7 +2,7 @@
   {
     "site_url": "https://example-real-estate.com",
     "selectors": {
-      "object_url": "a.listing-link",
+      "object_url": "a.listing-link@href",
       "title": ".listing-title",
       "description": ".listing-description",
       "address": ".listing-address",
@@ -10,7 +10,21 @@
       "rooms": ".listing-rooms",
       "floor": ".listing-floor",
       "area": ".listing-area",
-      "photos": ".listing-photo img"
+      "photos": ".listing-photo img@src"
+    }
+  },
+  {
+    "site_url": "https://another-site.com",
+    "selectors": {
+      "object_url": "a[data-testid='listing']::attr(href)",
+      "title": "h3.title",
+      "description": "p.description",
+      "address": "span.address",
+      "price": ".price",
+      "rooms": "span.rooms",
+      "floor": "span.floor",
+      "area": "span.area",
+      "photos": "div.gallery img::attr(src)"
     }
   }
 ]

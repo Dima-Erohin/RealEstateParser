@@ -54,24 +54,35 @@ class RealEstateParser:
     
     def extract_text(self, element: Any, selector: str) -> str:
         """
-        Извлекает текст по CSS-селектору
+        Извлекает текст или атрибут по CSS-селектору
+        
+        Поддерживает селекторы с атрибутами: selector@attr или selector::attr(attr)
+        Если указан атрибут, извлекается значение атрибута, иначе текст
         
         Args:
             element: BeautifulSoup элемент для поиска
-            selector: CSS-селектор
+            selector: CSS-селектор (может содержать @attr или ::attr(attr))
             
         Returns:
-            Извлеченный текст или пустая строка
+            Извлеченный текст/атрибут или пустая строка
         """
         if not selector or not element:
             return ""
         
         try:
-            found = element.select_one(selector)
+            clean_selector, attr = self.parse_selector_with_attr(selector)
+            
+            found = element.select_one(clean_selector) if clean_selector else element
+            
             if found:
-                return found.get_text(strip=True)
+                if attr:
+                    # Извлекаем атрибут
+                    return found.get(attr, "")
+                else:
+                    # Извлекаем текст
+                    return found.get_text(strip=True)
         except Exception as e:
-            print(f"Ошибка при извлечении текста по селектору '{selector}': {e}", file=sys.stderr)
+            print(f"Ошибка при извлечении по селектору '{selector}': {e}", file=sys.stderr)
         
         return ""
     
@@ -79,10 +90,13 @@ class RealEstateParser:
         """
         Извлекает атрибут по CSS-селектору
         
+        Поддерживает селекторы с атрибутами: selector@attr или selector::attr(attr)
+        Если атрибут указан в селекторе, используется он, иначе используется параметр attr
+        
         Args:
             element: BeautifulSoup элемент для поиска
-            selector: CSS-селектор
-            attr: Название атрибута (по умолчанию 'href')
+            selector: CSS-селектор (может содержать @attr или ::attr(attr))
+            attr: Название атрибута по умолчанию (если не указан в селекторе)
             
         Returns:
             Значение атрибута или пустая строка
@@ -91,11 +105,15 @@ class RealEstateParser:
             return ""
         
         try:
-            found = element.select_one(selector)
+            clean_selector, selector_attr = self.parse_selector_with_attr(selector)
+            # Используем атрибут из селектора, если указан, иначе используем параметр
+            target_attr = selector_attr if selector_attr else attr
+            
+            found = element.select_one(clean_selector) if clean_selector else element
             if found:
-                return found.get(attr, "")
+                return found.get(target_attr, "")
         except Exception as e:
-            print(f"Ошибка при извлечении атрибута '{attr}' по селектору '{selector}': {e}", file=sys.stderr)
+            print(f"Ошибка при извлечении атрибута по селектору '{selector}': {e}", file=sys.stderr)
         
         return ""
     
@@ -103,10 +121,13 @@ class RealEstateParser:
         """
         Извлекает список значений по CSS-селектору
         
+        Поддерживает селекторы с атрибутами: selector@attr или selector::attr(attr)
+        Если атрибут указан в селекторе, используется он, иначе используется параметр attr
+        
         Args:
             element: BeautifulSoup элемент для поиска
-            selector: CSS-селектор
-            attr: Атрибут для извлечения (если None, извлекается текст)
+            selector: CSS-селектор (может содержать @attr или ::attr(attr))
+            attr: Атрибут для извлечения (если None и не указан в селекторе, извлекается текст)
             
         Returns:
             Список значений
@@ -115,15 +136,54 @@ class RealEstateParser:
             return []
         
         try:
-            found_elements = element.select(selector)
-            if attr:
-                return [elem.get(attr, "") for elem in found_elements if elem.get(attr)]
+            clean_selector, selector_attr = self.parse_selector_with_attr(selector)
+            # Используем атрибут из селектора, если указан, иначе используем параметр
+            target_attr = selector_attr if selector_attr else attr
+            
+            found_elements = element.select(clean_selector) if clean_selector else [element]
+            
+            if target_attr:
+                return [elem.get(target_attr, "") for elem in found_elements if elem.get(target_attr)]
             else:
                 return [elem.get_text(strip=True) for elem in found_elements if elem.get_text(strip=True)]
         except Exception as e:
             print(f"Ошибка при извлечении списка по селектору '{selector}': {e}", file=sys.stderr)
         
         return []
+    
+    def parse_selector_with_attr(self, selector: str) -> tuple[str, Optional[str]]:
+        """
+        Парсит селектор с указанием атрибута
+        
+        Поддерживает форматы:
+        - selector@attr (например: "a@href", "img@src")
+        - selector::attr(attr) (например: "a::attr(href)", "img::attr(src)")
+        
+        Args:
+            selector: Селектор с возможным указанием атрибута
+            
+        Returns:
+            Кортеж (чистый_селектор, атрибут или None)
+        """
+        if not selector:
+            return selector, None
+        
+        # Формат: selector::attr(attr)
+        match = re.search(r'::attr\(([^)]+)\)$', selector)
+        if match:
+            attr = match.group(1)
+            clean_selector = selector[:match.start()].rstrip()
+            return clean_selector, attr
+        
+        # Формат: selector@attr
+        if '@' in selector:
+            parts = selector.rsplit('@', 1)
+            if len(parts) == 2:
+                clean_selector = parts[0].rstrip()
+                attr = parts[1].strip()
+                return clean_selector, attr
+        
+        return selector, None
     
     def normalize_url(self, url: str, base_url: str) -> str:
         """
@@ -171,35 +231,60 @@ class RealEstateParser:
         
         # Извлекаем URL объекта
         if "object_url" in selectors:
-            object_url = self.extract_attr(object_element, selectors["object_url"], "href")
+            object_url_selector = selectors["object_url"]
+            clean_selector, selector_attr = self.parse_selector_with_attr(object_url_selector)
+            
+            # Определяем атрибут для извлечения
+            target_attr = selector_attr if selector_attr else "href"
+            
+            # object_element уже найден по clean_selector (или его части)
+            # Пробуем извлечь атрибут из самого элемента
+            object_url = object_element.get(target_attr, "")
+            
+            # Если не найден в самом элементе и есть clean_selector, ищем внутри
+            if not object_url and clean_selector:
+                found = object_element.select_one(clean_selector)
+                if found:
+                    object_url = found.get(target_attr, "")
+            
             result["object_url"] = self.normalize_url(object_url, base_url)
+            
             # Если URL объекта - это сам элемент, используем его href
             if not result["object_url"] and object_element.name == 'a':
                 result["object_url"] = self.normalize_url(object_element.get("href", ""), base_url)
         
         # Извлекаем остальные поля
         # Селекторы могут быть относительными (относительно object_element) или абсолютными
+        # Поддерживается синтаксис @attr и ::attr(attr)
         for field in ["title", "description", "address", "price", "rooms", "floor", "area"]:
             if field in selectors:
                 result[field] = self.extract_text(object_element, selectors[field])
         
         # Извлекаем фото
         if "photos" in selectors:
-            photo_urls = self.extract_list(object_element, selectors["photos"], "src")
-            # Если src не найден, пробуем data-src или другие атрибуты
-            if not photo_urls:
-                photo_urls = self.extract_list(object_element, selectors["photos"], "data-src")
-            if not photo_urls:
-                photo_urls = self.extract_list(object_element, selectors["photos"], "data-lazy-src")
-            if not photo_urls:
-                # Пробуем background-image в style
-                img_elements = object_element.select(selectors["photos"])
-                for img in img_elements:
-                    style = img.get("style", "")
-                    if "url(" in style:
-                        match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
-                        if match:
-                            photo_urls.append(match.group(1))
+            # extract_list теперь поддерживает @attr и ::attr(attr) синтаксис
+            # Если атрибут указан в селекторе, он будет использован
+            clean_photo_selector, photo_attr = self.parse_selector_with_attr(selectors["photos"])
+            
+            if photo_attr:
+                # Атрибут указан в селекторе, используем его
+                photo_urls = self.extract_list(object_element, selectors["photos"])
+            else:
+                # Пробуем разные атрибуты по порядку
+                photo_urls = self.extract_list(object_element, clean_photo_selector, "src")
+                if not photo_urls:
+                    photo_urls = self.extract_list(object_element, clean_photo_selector, "data-src")
+                if not photo_urls:
+                    photo_urls = self.extract_list(object_element, clean_photo_selector, "data-lazy-src")
+                if not photo_urls:
+                    # Пробуем background-image в style
+                    img_elements = object_element.select(clean_photo_selector) if clean_photo_selector else []
+                    for img in img_elements:
+                        style = img.get("style", "")
+                        if "url(" in style:
+                            match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
+                            if match:
+                                photo_urls.append(match.group(1))
             
             # Нормализуем URL фото
             result["photos"] = [self.normalize_url(url, base_url) for url in photo_urls if url]
@@ -230,8 +315,10 @@ class RealEstateParser:
             return results
         
         # Находим все объекты на странице
-        object_selector = selectors["object_url"]
-        object_elements = soup.select(object_selector)
+        # Извлекаем чистый селектор (без @attr или ::attr(attr)) для поиска элементов
+        object_selector_full = selectors["object_url"]
+        object_selector, _ = self.parse_selector_with_attr(object_selector_full)
+        object_elements = soup.select(object_selector) if object_selector else []
         
         if not object_elements:
             print(f"Не найдено объектов на странице {site_url} по селектору '{object_selector}'", file=sys.stderr)
