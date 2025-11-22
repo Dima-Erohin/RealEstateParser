@@ -18,7 +18,7 @@ from urllib.parse import urljoin
 class RealEstateParser:
     """Класс для парсинга недвижимости с различных сайтов"""
     
-    def __init__(self, timeout: int = 30000, delay: float = 1.0, headless: bool = True):
+    def __init__(self, timeout: int = 60000, delay: float = 1.0, headless: bool = True):
         """
         Инициализация парсера
         
