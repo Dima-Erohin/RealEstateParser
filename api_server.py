@@ -15,7 +15,7 @@ app = FastAPI(title="Real Estate Parser API", version="1.0.0")
 
 
 @app.get("/parse")
-def parse_get(
+async def parse_get(
     data: Optional[str] = Query(None, description="JSON строка с данными для парсинга"),
     json_data: Optional[str] = Query(None, alias="json", description="JSON строка с данными для парсинга")
 ):
@@ -37,7 +37,7 @@ def parse_get(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON in query parameter")
     
-    return _process_parse_request(data_list)
+    return await _process_parse_request(data_list)
 
 
 @app.post("/parse")
@@ -62,7 +62,7 @@ async def parse_post(request: Request):
     return _process_parse_request(data)
 
 
-def _process_parse_request(data: Any) -> JSONResponse:
+async def _process_parse_request(data: Any) -> JSONResponse:
     """
     Обрабатывает запрос на парсинг
     
@@ -100,7 +100,7 @@ def _process_parse_request(data: Any) -> JSONResponse:
         # Создаем парсер и парсим
         parser = RealEstateParser(headless=True)
         try:
-            results = parser.parse_all_sites(data_list)
+            results = await parser.parse_all_sites(data_list)
             # Возвращаем результаты в виде чистого JSON
             return JSONResponse(
                 content=results,
@@ -108,7 +108,7 @@ def _process_parse_request(data: Any) -> JSONResponse:
             )
         finally:
             # Очищаем ресурсы браузера
-            parser.cleanup()
+            await parser.cleanup()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

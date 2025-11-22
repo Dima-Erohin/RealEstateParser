@@ -3,16 +3,16 @@
 """
 Real Estate Parser Script
 Получает JSON с сайтами и селекторами, парсит данные и возвращает результаты
-Использует Playwright для работы с JavaScript-сайтами
+Использует Playwright Async API для работы с JavaScript-сайтами
 """
 
 import json
 import sys
 import re
-from playwright.sync_api import sync_playwright, Page, ElementHandle, Browser, BrowserContext
+import asyncio
+from playwright.async_api import async_playwright, Page, ElementHandle, Browser, BrowserContext
 from typing import List, Dict, Any, Optional
 from urllib.parse import urljoin
-import time
 
 
 class RealEstateParser:
@@ -34,29 +34,45 @@ class RealEstateParser:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
     
-    def __enter__(self):
-        """Контекстный менеджер для автоматического закрытия браузера"""
-        self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(
+    async def __aenter__(self):
+        """Асинхронный контекстный менеджер для автоматического закрытия браузера"""
+        self.playwright = await async_playwright().start()
+        self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
             args=['--no-sandbox', '--disable-setuid-sandbox']  # Для деплоя на хостинг
         )
-        self.context = self.browser.new_context(
+        self.context = await self.browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             viewport={'width': 1920, 'height': 1080}
         )
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Закрытие браузера при выходе из контекста"""
         if self.context:
-            self.context.close()
+            await self.context.close()
         if self.browser:
-            self.browser.close()
+            await self.browser.close()
         if self.playwright:
-            self.playwright.stop()
+            await self.playwright.stop()
     
-    def fetch_page(self, url: str) -> Optional[Page]:
+    async def _ensure_browser(self):
+        """Обеспечивает инициализацию браузера"""
+        if not self.context:
+            if not self.playwright:
+                self.playwright = await async_playwright().start()
+            if not self.browser:
+                self.browser = await self.playwright.chromium.launch(
+                    headless=self.headless,
+                    args=['--no-sandbox', '--disable-setuid-sandbox']
+                )
+            if not self.context:
+                self.context = await self.browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    viewport={'width': 1920, 'height': 1080}
+                )
+    
+    async def fetch_page(self, url: str) -> Optional[Page]:
         """
         Загружает страницу и возвращает Page объект
         
@@ -66,32 +82,19 @@ class RealEstateParser:
         Returns:
             Page объект или None при ошибке
         """
-        # Инициализируем браузер, если еще не инициализирован
-        if not self.context:
-            if not self.playwright:
-                self.playwright = sync_playwright().start()
-            if not self.browser:
-                self.browser = self.playwright.chromium.launch(
-                    headless=self.headless,
-                    args=['--no-sandbox', '--disable-setuid-sandbox']
-                )
-            if not self.context:
-                self.context = self.browser.new_context(
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    viewport={'width': 1920, 'height': 1080}
-                )
+        await self._ensure_browser()
         
         try:
-            page = self.context.new_page()
-            page.goto(url, wait_until='networkidle', timeout=self.timeout)
+            page = await self.context.new_page()
+            await page.goto(url, wait_until='networkidle', timeout=self.timeout)
             # Небольшая задержка для загрузки динамического контента
-            page.wait_for_timeout(1000)
+            await page.wait_for_timeout(1000)
             return page
         except Exception as e:
             print(f"Ошибка при загрузке {url}: {e}", file=sys.stderr)
             return None
     
-    def extract_text(self, element: Any, selector: str, page: Optional[Page] = None) -> str:
+    async def extract_text(self, element: Any, selector: str, page: Optional[Page] = None) -> str:
         """
         Извлекает текст или атрибут по CSS-селектору
         
@@ -119,25 +122,25 @@ class RealEstateParser:
                 return ""
             
             if clean_selector:
-                found = search_element.query_selector(clean_selector)
+                found = await search_element.query_selector(clean_selector)
             else:
                 found = element if isinstance(element, ElementHandle) else None
             
             if found:
                 if attr:
                     # Извлекаем атрибут
-                    result = found.get_attribute(attr) or ""
+                    result = await found.get_attribute(attr) or ""
                     return result.strip()
                 else:
                     # Извлекаем текст
-                    result = found.text_content() or ""
+                    result = await found.text_content() or ""
                     return result.strip()
         except Exception as e:
             print(f"Ошибка при извлечении по селектору '{selector}': {e}", file=sys.stderr)
         
         return ""
     
-    def extract_attr(self, element: Any, selector: str, attr: str = 'href', page: Optional[Page] = None) -> str:
+    async def extract_attr(self, element: Any, selector: str, attr: str = 'href', page: Optional[Page] = None) -> str:
         """
         Извлекает атрибут по CSS-селектору
         
@@ -168,19 +171,19 @@ class RealEstateParser:
                 return ""
             
             if clean_selector:
-                found = search_element.query_selector(clean_selector)
+                found = await search_element.query_selector(clean_selector)
             else:
                 found = element if isinstance(element, ElementHandle) else None
             
             if found:
-                result = found.get_attribute(target_attr) or ""
+                result = await found.get_attribute(target_attr) or ""
                 return result.strip()
         except Exception as e:
             print(f"Ошибка при извлечении атрибута по селектору '{selector}': {e}", file=sys.stderr)
         
         return ""
     
-    def extract_list(self, element: Any, selector: str, attr: Optional[str] = None, page: Optional[Page] = None) -> List[str]:
+    async def extract_list(self, element: Any, selector: str, attr: Optional[str] = None, page: Optional[Page] = None) -> List[str]:
         """
         Извлекает список значений по CSS-селектору
         
@@ -211,7 +214,7 @@ class RealEstateParser:
                 return []
             
             if clean_selector:
-                found_elements = search_element.query_selector_all(clean_selector)
+                found_elements = await search_element.query_selector_all(clean_selector)
             else:
                 found_elements = [element] if isinstance(element, ElementHandle) else []
             
@@ -219,11 +222,11 @@ class RealEstateParser:
             for elem in found_elements:
                 try:
                     if target_attr:
-                        value = elem.get_attribute(target_attr)
+                        value = await elem.get_attribute(target_attr)
                         if value:
                             results.append(value.strip())
                     else:
-                        value = elem.text_content()
+                        value = await elem.text_content()
                         if value:
                             results.append(value.strip())
                 except Exception:
@@ -288,7 +291,7 @@ class RealEstateParser:
         
         return urljoin(base_url, url)
     
-    def parse_object(self, object_element: ElementHandle, selectors: Dict[str, str], base_url: str, page: Page) -> Dict[str, Any]:
+    async def parse_object(self, object_element: ElementHandle, selectors: Dict[str, str], base_url: str, page: Page) -> Dict[str, Any]:
         """
         Парсит один объект недвижимости
         
@@ -323,21 +326,21 @@ class RealEstateParser:
             target_attr = selector_attr if selector_attr else "href"
             
             # Пробуем извлечь атрибут из самого элемента
-            object_url = object_element.get_attribute(target_attr) or ""
+            object_url = await object_element.get_attribute(target_attr) or ""
             
             # Если не найден в самом элементе и есть clean_selector, ищем внутри
             if not object_url and clean_selector:
-                found = object_element.query_selector(clean_selector)
+                found = await object_element.query_selector(clean_selector)
                 if found:
-                    object_url = found.get_attribute(target_attr) or ""
+                    object_url = await found.get_attribute(target_attr) or ""
             
             result["object_url"] = self.normalize_url(object_url, base_url)
             
             # Если URL объекта - это сам элемент (ссылка), используем его href
             if not result["object_url"]:
-                tag_name = object_element.evaluate("el => el.tagName.toLowerCase()")
+                tag_name = await object_element.evaluate("el => el.tagName.toLowerCase()")
                 if tag_name == 'a':
-                    object_url = object_element.get_attribute("href") or ""
+                    object_url = await object_element.get_attribute("href") or ""
                     result["object_url"] = self.normalize_url(object_url, base_url)
         
         # Извлекаем остальные поля
@@ -345,7 +348,7 @@ class RealEstateParser:
         # Поддерживается синтаксис @attr и ::attr(attr)
         for field in ["title", "description", "address", "price", "rooms", "floor", "area"]:
             if field in selectors:
-                result[field] = self.extract_text(object_element, selectors[field], page)
+                result[field] = await self.extract_text(object_element, selectors[field], page)
         
         # Извлекаем фото
         if "photos" in selectors:
@@ -355,20 +358,20 @@ class RealEstateParser:
             
             if photo_attr:
                 # Атрибут указан в селекторе, используем его
-                photo_urls = self.extract_list(object_element, selectors["photos"], page=page)
+                photo_urls = await self.extract_list(object_element, selectors["photos"], page=page)
             else:
                 # Пробуем разные атрибуты по порядку
-                photo_urls = self.extract_list(object_element, clean_photo_selector, "src", page)
+                photo_urls = await self.extract_list(object_element, clean_photo_selector, "src", page)
                 if not photo_urls:
-                    photo_urls = self.extract_list(object_element, clean_photo_selector, "data-src", page)
+                    photo_urls = await self.extract_list(object_element, clean_photo_selector, "data-src", page)
                 if not photo_urls:
-                    photo_urls = self.extract_list(object_element, clean_photo_selector, "data-lazy-src", page)
+                    photo_urls = await self.extract_list(object_element, clean_photo_selector, "data-lazy-src", page)
                 if not photo_urls:
                     # Пробуем background-image в style
-                    img_elements = object_element.query_selector_all(clean_photo_selector) if clean_photo_selector else []
+                    img_elements = await object_element.query_selector_all(clean_photo_selector) if clean_photo_selector else []
                     for img in img_elements:
                         try:
-                            style = img.get_attribute("style") or ""
+                            style = await img.get_attribute("style") or ""
                             if "url(" in style:
                                 match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
                                 if match:
@@ -381,7 +384,7 @@ class RealEstateParser:
         
         return result
     
-    def parse_site(self, site_url: str, selectors: Dict[str, str]) -> List[Dict[str, Any]]:
+    async def parse_site(self, site_url: str, selectors: Dict[str, str]) -> List[Dict[str, Any]]:
         """
         Парсит все объекты на сайте
         
@@ -397,7 +400,7 @@ class RealEstateParser:
         
         try:
             # Загружаем главную страницу
-            page = self.fetch_page(site_url)
+            page = await self.fetch_page(site_url)
             if not page:
                 return results
             
@@ -415,7 +418,7 @@ class RealEstateParser:
                 print(f"Не удалось извлечь селектор из '{object_selector_full}'", file=sys.stderr)
                 return results
             
-            object_elements = page.query_selector_all(object_selector)
+            object_elements = await page.query_selector_all(object_selector)
             
             if not object_elements:
                 print(f"Не найдено объектов на странице {site_url} по селектору '{object_selector}'", file=sys.stderr)
@@ -426,7 +429,7 @@ class RealEstateParser:
             # Парсим каждый объект
             for obj_elem in object_elements:
                 try:
-                    obj_data = self.parse_object(obj_elem, selectors, site_url, page)
+                    obj_data = await self.parse_object(obj_elem, selectors, site_url, page)
                     # Добавляем только если есть хотя бы URL объекта
                     if obj_data["object_url"]:
                         results.append(obj_data)
@@ -438,17 +441,17 @@ class RealEstateParser:
             # Закрываем страницу
             if page:
                 try:
-                    page.close()
+                    await page.close()
                 except Exception:
                     pass
         
         # Задержка между запросами
         if self.delay > 0:
-            time.sleep(self.delay)
+            await asyncio.sleep(self.delay)
         
         return results
     
-    def parse_all_sites(self, sites: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def parse_all_sites(self, sites: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Парсит все сайты из списка
         
@@ -461,19 +464,7 @@ class RealEstateParser:
         all_results = []
         
         # Инициализируем браузер, если еще не инициализирован
-        if not self.context:
-            if not self.playwright:
-                self.playwright = sync_playwright().start()
-            if not self.browser:
-                self.browser = self.playwright.chromium.launch(
-                    headless=self.headless,
-                    args=['--no-sandbox', '--disable-setuid-sandbox']
-                )
-            if not self.context:
-                self.context = self.browser.new_context(
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    viewport={'width': 1920, 'height': 1080}
-                )
+        await self._ensure_browser()
         
         for site in sites:
             site_url = site.get("site_url", "")
@@ -488,35 +479,35 @@ class RealEstateParser:
                 continue
             
             print(f"Парсинг сайта: {site_url}", file=sys.stderr)
-            site_results = self.parse_site(site_url, selectors)
+            site_results = await self.parse_site(site_url, selectors)
             all_results.extend(site_results)
         
         return all_results
     
-    def cleanup(self):
+    async def cleanup(self):
         """Явное закрытие браузера (если не используется контекстный менеджер)"""
         if self.context:
             try:
-                self.context.close()
+                await self.context.close()
             except Exception:
                 pass
             self.context = None
         if self.browser:
             try:
-                self.browser.close()
+                await self.browser.close()
             except Exception:
                 pass
             self.browser = None
         if self.playwright:
             try:
-                self.playwright.stop()
+                await self.playwright.stop()
             except Exception:
                 pass
             self.playwright = None
 
 
-def main():
-    """Главная функция для работы из командной строки"""
+async def main_async():
+    """Асинхронная главная функция для работы из командной строки"""
     # Читаем JSON из stdin или из аргументов командной строки
     if len(sys.argv) > 1:
         # Читаем из файла
@@ -538,14 +529,18 @@ def main():
     # Создаем парсер и парсим
     parser = RealEstateParser(headless=True)
     try:
-        results = parser.parse_all_sites(data)
+        results = await parser.parse_all_sites(data)
         # Выводим результат в формате JSON
         print(json.dumps(results, ensure_ascii=False, indent=2))
     finally:
         # Очищаем ресурсы
-        parser.cleanup()
+        await parser.cleanup()
+
+
+def main():
+    """Главная функция для работы из командной строки"""
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
     main()
-
