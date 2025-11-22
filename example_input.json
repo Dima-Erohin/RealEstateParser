@@ -1,0 +1,17 @@
+[
+  {
+    "site_url": "https://example-real-estate.com",
+    "selectors": {
+      "object_url": "a.listing-link",
+      "title": ".listing-title",
+      "description": ".listing-description",
+      "address": ".listing-address",
+      "price": ".listing-price",
+      "rooms": ".listing-rooms",
+      "floor": ".listing-floor",
+      "area": ".listing-area",
+      "photos": ".listing-photo img"
+    }
+  }
+]
+
