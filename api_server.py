@@ -59,7 +59,7 @@ async def parse_post(request: Request):
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid JSON in request body: {str(e)}")
     
-    return _process_parse_request(data)
+    return await _process_parse_request(data)
 
 
 async def _process_parse_request(data: Any) -> JSONResponse:
