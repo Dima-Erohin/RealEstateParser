@@ -45,34 +45,47 @@ async def parse_post(request: Request):
     """
     Endpoint для парсинга недвижимости (POST)
     
-    Принимает JSON в теле запроса
+    Принимает JSON в теле запроса.
+    Может быть один объект: {"site_url": "...", "selectors": {...}}
+    Или массив объектов: [{"site_url": "...", "selectors": {...}}, ...]
     """
     try:
-        data_list = await request.json()
+        data = await request.json()
     except Exception:
         # Пробуем прочитать как raw JSON
         try:
             body = await request.body()
-            data_list = json.loads(body.decode('utf-8'))
+            data = json.loads(body.decode('utf-8'))
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid JSON in request body: {str(e)}")
     
-    return _process_parse_request(data_list)
+    return _process_parse_request(data)
 
 
-def _process_parse_request(data_list: Any) -> JSONResponse:
+def _process_parse_request(data: Any) -> JSONResponse:
     """
     Обрабатывает запрос на парсинг
     
+    Принимает как один объект, так и массив объектов
+    
     Args:
-        data_list: Список сайтов для парсинга
+        data: Объект сайта или список сайтов для парсинга
         
     Returns:
         JSONResponse с результатами парсинга
     """
-    # Проверяем формат данных
-    if not isinstance(data_list, list):
-        raise HTTPException(status_code=400, detail="Expected a list of sites")
+    # Нормализуем данные: если пришел один объект, оборачиваем в массив
+    if isinstance(data, dict):
+        # Один объект - оборачиваем в массив
+        data_list = [data]
+    elif isinstance(data, list):
+        # Уже массив
+        data_list = data
+    else:
+        raise HTTPException(
+            status_code=400, 
+            detail="Expected an object with 'site_url' and 'selectors' or an array of such objects"
+        )
     
     # Валидация структуры данных
     for site in data_list:
